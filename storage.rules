@@ -1,0 +1,22 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Same restaurant-membership check as firestore.rules, done against
+    // the userRestaurants/{uid} document via the firestore.get() bridge.
+    function belongsToRestaurant(restaurantId) {
+      return isSignedIn() &&
+        firestore.get(/databases/(default)/documents/userRestaurants/$(request.auth.uid)).data.restaurantId == restaurantId;
+    }
+
+    // Product images live at restaurants/{restaurantId}/products/{productId}.jpg
+    match /restaurants/{restaurantId}/{allPaths=**} {
+      allow read, write: if belongsToRestaurant(restaurantId);
+    }
+  }
+}

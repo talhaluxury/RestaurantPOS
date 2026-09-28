@@ -1,0 +1,72 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Looks up which restaurant the signed-in user belongs to
+    // via the userRestaurants/{uid} -> { restaurantId } mapping.
+    function belongsToRestaurant(restaurantId) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/userRestaurants/$(request.auth.uid)).data.restaurantId == restaurantId;
+    }
+
+    // userRestaurants/{userId}: a user can only read/write their own mapping doc.
+    // (Needed on signup, before they belong to any restaurant yet.)
+    match /userRestaurants/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // restaurants/{restaurantId} and everything under it (categories, products,
+    // orders, tables, inventory, staff, settings) — only staff of that
+    // restaurant can read or write, EXCEPT the carve-outs below for the
+    // public customer-facing ordering website (no login for customers).
+    match /restaurants/{restaurantId} {
+      // Public can read basic restaurant info (name, currency, logo) to show on the website.
+      allow get: if true;
+      allow list, write: if belongsToRestaurant(restaurantId);
+
+      // Menu is public-read so the website always mirrors what's in the app live.
+      // Only staff can add/edit/remove items.
+      match /categories/{categoryId} {
+        allow read: if true;
+        allow write: if belongsToRestaurant(restaurantId);
+      }
+      match /products/{productId} {
+        allow read: if true;
+        allow write: if belongsToRestaurant(restaurantId);
+      }
+
+      // Orders: staff can list/read/write everything (Kitchen, Orders screens).
+      // The public website can CREATE a new order (checkout) and GET a single
+      // order by its own id (the live tracking page) — but cannot list every
+      // order, and cannot edit or delete one once placed.
+      match /orders/{orderId} {
+        allow get: if true;
+        allow list: if belongsToRestaurant(restaurantId);
+        allow create: if belongsToRestaurant(restaurantId) || isValidWebOrder();
+        allow update, delete: if belongsToRestaurant(restaurantId);
+      }
+
+      match /{document=**} {
+        allow read, write: if belongsToRestaurant(restaurantId);
+      }
+    }
+
+    // A minimal-trust check for orders created by the public website (no auth):
+    // must land as a fresh "NEW" order with a real item list and a non-negative total.
+    // This is not a substitute for staff auth — it just blocks obviously-malformed writes.
+    function isValidWebOrder() {
+      let d = request.resource.data;
+      return d.status == 'NEW'
+        && d.total is number && d.total >= 0
+        && d.items is list && d.items.size() > 0;
+    }
+
+    // Deny everything else by default (implicit — Firestore denies
+    // anything not matched above).
+  }
+}
